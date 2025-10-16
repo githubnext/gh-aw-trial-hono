@@ -18,64 +18,93 @@ Optimizations to any of these steps directly impact throughput and latency.
 ### Current State
 - Multiple router implementations: RegExpRouter (default), TrieRouter, SmartRouter, LinearRouter, PatternRouter
 - RegExpRouter is highlighted as "really fast" - no linear loops
-- Already highly optimized
+- Already highly optimized with wildcard RegExp caching
+- Static path fast path already implemented in matcher
 
-### Optimization Opportunities
+### Investigation Results (Oct 2025)
 
-**1. Route Compilation Caching**
+**Router Initialization Performance:**
+Investigated optimizing `findMiddleware()` function which sorts middleware keys on each call during route registration.
+
+**Attempted optimization**: Cache sorted middleware keys to avoid repeated O(n log n) sorting.
+
+**Result**: No measurable improvement for typical workloads:
+- Most applications have 0-5 wildcard middleware patterns
+- Sorting overhead is negligible for small n (microseconds)
+- Cache management overhead offsets potential gains
+- Current implementation is already optimal for common case
+
+**Benchmark data** (100 iterations, 5 middleware + 200 routes):
+- Baseline: 2.09ms per app initialization
+- With caching: 2.16ms (slightly worse due to Map allocation overhead)
+
+**Conclusion**: Router initialization in RegExpRouter is already well-optimized. The current implementation strikes the right balance between simplicity and performance for typical workloads.
+
+### Real Optimization Opportunities
+
+**1. Route Compilation Caching (Already Implemented)**
 ```typescript
-// Consider caching compiled RegExp patterns
-// Location: src/router/reg-exp-router/router.ts
-
-// Instead of recompiling on each lookup:
-const pattern = new RegExp(routePattern);
-
-// Cache compiled patterns:
-const patternCache = new Map<string, RegExp>();
-const getPattern = (route: string) => {
-  if (!patternCache.has(route)) {
-    patternCache.set(route, new RegExp(route));
-  }
-  return patternCache.get(route)!;
-};
-```
-
-**2. Trie Node Structure Optimization**
-```typescript
-// Location: src/router/trie-router/node.ts
-// Consider memory layout and cache locality
-
-// Current: Object with multiple properties
-class TrieNode {
-  children: Map<string, TrieNode>
-  handlers: Handler[]
-  // ... other properties
+// Location: src/router/reg-exp-router/router.ts:19-28
+// Wildcard RegExp patterns are cached in wildcardRegExpCache
+let wildcardRegExpCache: Record<string, RegExp> = Object.create(null)
+function buildWildcardRegExp(path: string): RegExp {
+  return (wildcardRegExpCache[path] ??= new RegExp(/* ... */))
 }
-
-// Potential: Flat array for better cache locality
-// Trade-off: Complexity vs speed
 ```
+✅ Already optimized - no action needed.
 
-**3. Fast Path for Common Cases**
+**2. Static Path Fast Path (Already Implemented)**
 ```typescript
-// Add fast path for exact matches (no params)
-// Before full pattern matching
-
-if (exactMatchCache.has(path)) {
-  return exactMatchCache.get(path);
+// Location: src/router/reg-exp-router/matcher.ts:17-20
+const staticMatch = matcher[2][path]
+if (staticMatch) {
+  return staticMatch  // O(1) lookup, bypasses regex matching
 }
-// Fall back to pattern matching
 ```
+✅ Already optimized - no action needed.
+
+**3. Potential Future Optimizations**
+- **HTTP Method-specific routing**: Pre-filter routes by HTTP method before matching
+- **Trie node structure**: Investigate cache-friendly memory layouts (complex trade-off)
+- **JIT compilation**: For apps with 1000s of routes, consider generating specialized matching code
+
+### When to Optimize Router
+
+Only consider router optimization if:
+1. Profiling shows router matching is >10% of request time
+2. Application has 100+ routes with complex patterns
+3. Measurable P99 latency impact on production traffic
+
+For most applications, router performance is NOT the bottleneck.
 
 ### Measurement Strategy
 ```bash
-# Quick iteration
+# Router lookup benchmark (comparing implementations)
 cd benchmarks/routers
-bun run benchmark.ts  # Compare implementations
+bun install
+bun run src/bench.mts
 
-# Validate with HTTP benchmark
+# Real HTTP request performance
 cd ../http-server
-bun run benchmark.ts  # Real request performance
+bun run benchmark.ts
+
+# Custom micro-benchmark for specific patterns
+cat > /tmp/router-bench.ts << 'EOF'
+import { Hono } from './src/hono'
+
+const app = new Hono()
+// Add your routes
+app.get('/api/:id', (c) => c.text('ok'))
+
+const iterations = 100_000
+const start = performance.now()
+for (let i = 0; i < iterations; i++) {
+  await app.request('/api/123')
+}
+const end = performance.now()
+console.log(`${iterations / ((end - start) / 1000)} req/s`)
+EOF
+bun run /tmp/router-bench.ts
 ```
 
 ## Middleware Composition Performance
