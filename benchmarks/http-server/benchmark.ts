@@ -22,7 +22,7 @@ import { join } from 'node:path'
 const baseline =
   process.argv.find((arg) => arg.startsWith('--baseline='))?.split('=')[1] || 'origin/main'
 const target = process.argv.find((arg) => arg.startsWith('--target='))?.split('=')[1] || 'current'
-const runs = parseInt(process.argv.find((arg) => arg.startsWith('--runs='))?.split('=')[1] || '1')
+const runs = parseInt(process.argv.find((arg) => arg.startsWith('--runs='))?.split('=')[1] || '3')
 const duration = parseInt(
   process.argv.find((arg) => arg.startsWith('--duration='))?.split('=')[1] || '10'
 )
@@ -223,12 +223,43 @@ const runBenchmark = async (appPath: string, name: string) => {
 
   const average = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length
 
-  const ping = average(allRuns.map((run) => run[0]))
-  const query = average(allRuns.map((run) => run[1]))
-  const body = average(allRuns.map((run) => run[2]))
+  const stdDev = (arr: number[]) => {
+    const mean = average(arr)
+    const squareDiffs = arr.map((value) => Math.pow(value - mean, 2))
+    return Math.sqrt(average(squareDiffs))
+  }
+
+  const confidenceInterval = (arr: number[], confidence = 0.95) => {
+    if (arr.length < 2) return 0
+    const mean = average(arr)
+    const sd = stdDev(arr)
+    // Using t-distribution approximation (z-score for 95% CI ≈ 1.96)
+    const zScore = confidence === 0.95 ? 1.96 : 2.576 // 95% or 99%
+    return zScore * (sd / Math.sqrt(arr.length))
+  }
+
+  const pingValues = allRuns.map((run) => run[0])
+  const queryValues = allRuns.map((run) => run[1])
+  const bodyValues = allRuns.map((run) => run[2])
+
+  const ping = average(pingValues)
+  const query = average(queryValues)
+  const body = average(bodyValues)
   const overall = (ping + query + body) / 3
 
-  return { name, average: overall, ping, query, body, runs: allRuns.map((run) => average(run)) }
+  return {
+    name,
+    average: overall,
+    ping,
+    query,
+    body,
+    runs: allRuns.map((run) => average(run)),
+    stats: {
+      ping: { mean: ping, stdDev: stdDev(pingValues), ci95: confidenceInterval(pingValues) },
+      query: { mean: query, stdDev: stdDev(queryValues), ci95: confidenceInterval(queryValues) },
+      body: { mean: body, stdDev: stdDev(bodyValues), ci95: confidenceInterval(bodyValues) },
+    },
+  }
 }
 
 const main = async () => {
@@ -256,6 +287,18 @@ const main = async () => {
     const calculateChange = (target: number, baseline: number) =>
       (((target - baseline) / baseline) * 100).toFixed(2)
 
+    // Determine statistical significance
+    const isSignificant = (
+      targetValue: number,
+      baselineValue: number,
+      targetCI: number,
+      baselineCI: number
+    ) => {
+      const diff = Math.abs(targetValue - baselineValue)
+      const combinedCI = targetCI + baselineCI
+      return diff > combinedCI
+    }
+
     const changes = {
       average: calculateChange(targetResult.average, baselineResult.average),
       ping: calculateChange(targetResult.ping, baselineResult.ping),
@@ -263,9 +306,39 @@ const main = async () => {
       body: calculateChange(targetResult.body, baselineResult.body),
     }
 
+    const significance = {
+      ping: isSignificant(
+        targetResult.ping,
+        baselineResult.ping,
+        targetResult.stats.ping.ci95,
+        baselineResult.stats.ping.ci95
+      ),
+      query: isSignificant(
+        targetResult.query,
+        baselineResult.query,
+        targetResult.stats.query.ci95,
+        baselineResult.stats.query.ci95
+      ),
+      body: isSignificant(
+        targetResult.body,
+        baselineResult.body,
+        targetResult.stats.body.ci95,
+        baselineResult.stats.body.ci95
+      ),
+    }
+
     // Format numbers
     const format = (num: number) => num.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
-    const formatChange = (change: string) => (Number(change) >= 0 ? '+' : '') + change + '%'
+    const formatWithCI = (num: number, ci: number) => {
+      const formatted = format(num)
+      const ciFormatted = ci > 0 ? ` ± ${format(ci)}` : ''
+      return `${formatted}${ciFormatted}`
+    }
+    const formatChange = (change: string, significant: boolean) => {
+      const prefix = Number(change) >= 0 ? '+' : ''
+      const suffix = significant ? '% *' : '%'
+      return prefix + change + suffix
+    }
 
     // Generate table data
     const rows = [
@@ -273,25 +346,25 @@ const main = async () => {
         framework: `hono (${baseline})`,
         runtime: 'bun',
         average: format(baselineResult.average),
-        ping: format(baselineResult.ping),
-        query: format(baselineResult.query),
-        body: format(baselineResult.body),
+        ping: formatWithCI(baselineResult.ping, baselineResult.stats.ping.ci95),
+        query: formatWithCI(baselineResult.query, baselineResult.stats.query.ci95),
+        body: formatWithCI(baselineResult.body, baselineResult.stats.body.ci95),
       },
       {
         framework: `hono (${target})`,
         runtime: 'bun',
         average: format(targetResult.average),
-        ping: format(targetResult.ping),
-        query: format(targetResult.query),
-        body: format(targetResult.body),
+        ping: formatWithCI(targetResult.ping, targetResult.stats.ping.ci95),
+        query: formatWithCI(targetResult.query, targetResult.stats.query.ci95),
+        body: formatWithCI(targetResult.body, targetResult.stats.body.ci95),
       },
       {
         framework: 'Change',
         runtime: '',
-        average: formatChange(changes.average),
-        ping: formatChange(changes.ping),
-        query: formatChange(changes.query),
-        body: formatChange(changes.body),
+        average: formatChange(changes.average, false),
+        ping: formatChange(changes.ping, significance.ping),
+        query: formatChange(changes.query, significance.query),
+        body: formatChange(changes.body, significance.body),
       },
     ]
 
@@ -309,10 +382,99 @@ const main = async () => {
     table.forEach((line) => console.log(line))
     console.log('')
 
-    // Markdown output
-    const markdownOutput = ['## HTTP Performance Benchmark', '', ...table].join('\n')
+    if (runs > 1) {
+      console.log('Note: Values shown as mean ± 95% confidence interval')
+      console.log('      * indicates statistically significant difference (p < 0.05)')
+      console.log('')
+    }
+
+    // Markdown output with statistical notes
+    const statisticalNotes =
+      runs > 1
+        ? [
+            '',
+            '**Statistical Analysis:**',
+            `- Values shown as mean ± 95% confidence interval (${runs} runs)`,
+            '- \\* indicates statistically significant difference (non-overlapping confidence intervals)',
+            '- Confidence intervals help distinguish real performance changes from measurement noise',
+            '',
+          ]
+        : ['']
+
+    const markdownOutput = [
+      '## HTTP Performance Benchmark',
+      '',
+      ...table,
+      ...statisticalNotes,
+    ].join('\n')
+
+    // JSON output for programmatic analysis
+    const jsonOutput = {
+      config: {
+        baseline,
+        target,
+        runs,
+        duration,
+        concurrency,
+      },
+      results: {
+        baseline: {
+          overall: baselineResult.average,
+          endpoints: {
+            ping: {
+              mean: baselineResult.ping,
+              stdDev: baselineResult.stats.ping.stdDev,
+              ci95: baselineResult.stats.ping.ci95,
+            },
+            query: {
+              mean: baselineResult.query,
+              stdDev: baselineResult.stats.query.stdDev,
+              ci95: baselineResult.stats.query.ci95,
+            },
+            body: {
+              mean: baselineResult.body,
+              stdDev: baselineResult.stats.body.stdDev,
+              ci95: baselineResult.stats.body.ci95,
+            },
+          },
+          rawRuns: baselineResult.runs,
+        },
+        target: {
+          overall: targetResult.average,
+          endpoints: {
+            ping: {
+              mean: targetResult.ping,
+              stdDev: targetResult.stats.ping.stdDev,
+              ci95: targetResult.stats.ping.ci95,
+            },
+            query: {
+              mean: targetResult.query,
+              stdDev: targetResult.stats.query.stdDev,
+              ci95: targetResult.stats.query.ci95,
+            },
+            body: {
+              mean: targetResult.body,
+              stdDev: targetResult.stats.body.stdDev,
+              ci95: targetResult.stats.body.ci95,
+            },
+          },
+          rawRuns: targetResult.runs,
+        },
+        comparison: {
+          changes: {
+            overall: parseFloat(changes.average),
+            ping: parseFloat(changes.ping),
+            query: parseFloat(changes.query),
+            body: parseFloat(changes.body),
+          },
+          significance,
+        },
+      },
+      timestamp: new Date().toISOString(),
+    }
 
     writeFileSync(join(SCRIPT_DIR, 'benchmark-results.md'), markdownOutput)
+    writeFileSync(join(SCRIPT_DIR, 'benchmark-results.json'), JSON.stringify(jsonOutput, null, 2))
   } catch (error) {
     console.error('❌ Benchmark failed:', error)
     throw error
