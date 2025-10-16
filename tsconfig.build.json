@@ -5,7 +5,9 @@
     "rootDir": "./src/",
     "outDir": "./dist/types/",
     "noUnusedLocals": true,
-    "noUnusedParameters": true
+    "noUnusedParameters": true,
+    "incremental": true,
+    "tsBuildInfoFile": ".tsbuildinfo"
   },
   "include": [
     "src/**/*.ts",
