@@ -94,6 +94,9 @@ export const booleanAttributes = [
   'selected',
 ]
 
+// Convert to Set for O(1) lookup performance
+const booleanAttributesSet = new Set(booleanAttributes)
+
 const childrenToStringToBuffer = (children: Child[], buffer: StringBufferWithCallbacks): void => {
   for (let i = 0, len = children.length; i < len; i++) {
     const child = children[i]
@@ -180,21 +183,26 @@ export class JSXNode implements HtmlEscaped {
       nameSpaceContext && useContext(nameSpaceContext) === 'svg'
         ? (key) => toSVGAttributeName(normalizeIntrinsicElementKey(key))
         : (key) => normalizeIntrinsicElementKey(key)
-    for (let [key, v] of Object.entries(props)) {
+    // Use for...in instead of Object.entries() to avoid intermediate array allocation
+    for (let key in props) {
+      if (!props.hasOwnProperty(key)) continue
+      const v = props[key]
       key = normalizeKey(key)
       if (key === 'children') {
         // skip children
       } else if (key === 'style' && typeof v === 'object') {
-        // object to style strings
-        let styleStr = ''
+        // object to style strings - collect parts and join for better performance
+        const styleParts: string[] = []
         styleObjectForEach(v, (property, value) => {
           if (value != null) {
-            styleStr += `${styleStr ? ';' : ''}${property}:${value}`
+            styleParts.push(`${property}:${value}`)
           }
         })
-        buffer[0] += ' style="'
-        escapeToBuffer(styleStr, buffer)
-        buffer[0] += '"'
+        if (styleParts.length > 0) {
+          buffer[0] += ' style="'
+          escapeToBuffer(styleParts.join(';'), buffer)
+          buffer[0] += '"'
+        }
       } else if (typeof v === 'string') {
         buffer[0] += ` ${key}="`
         escapeToBuffer(v, buffer)
@@ -203,7 +211,7 @@ export class JSXNode implements HtmlEscaped {
         // Do nothing
       } else if (typeof v === 'number' || (v as HtmlEscaped).isEscaped) {
         buffer[0] += ` ${key}="${v}"`
-      } else if (typeof v === 'boolean' && booleanAttributes.includes(key)) {
+      } else if (typeof v === 'boolean' && booleanAttributesSet.has(key)) {
         if (v) {
           buffer[0] += ` ${key}=""`
         }
