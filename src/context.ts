@@ -297,6 +297,7 @@ export class Context<
    */
   env: E['Bindings'] = {}
   #var: Map<unknown, unknown> | undefined
+  #varCache: Record<string, unknown> | undefined
   finalized: boolean = false
   /**
    * `.error` can get the error object from the middleware if the Handler throws an error.
@@ -536,6 +537,8 @@ export class Context<
   > = (key: string, value: unknown) => {
     this.#var ??= new Map()
     this.#var.set(key, value)
+    // Invalidate cache when variables change
+    this.#varCache = undefined
   }
 
   /**
@@ -581,7 +584,11 @@ export class Context<
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return {} as any
     }
-    return Object.fromEntries(this.#var)
+    // Cache the result to avoid repeated Object.fromEntries() calls
+    if (!this.#varCache) {
+      this.#varCache = Object.fromEntries(this.#var)
+    }
+    return this.#varCache
   }
 
   #newResponse(
@@ -696,11 +703,15 @@ export class Context<
     arg?: U | ResponseOrInit<U>,
     headers?: HeaderRecord
   ): JSONRespondReturn<T, U> => {
-    return this.#newResponse(
-      JSON.stringify(object),
-      arg,
-      setDefaultContentType('application/json', headers)
-    ) /* eslint-disable @typescript-eslint/no-explicit-any */ as any
+    const body = JSON.stringify(object)
+    // Fast path: skip header merging overhead for simple responses
+    return !this.#preparedHeaders && !this.#status && !arg && !headers && !this.finalized
+      ? (Response.json(object) /* eslint-disable @typescript-eslint/no-explicit-any */ as any)
+      : (this.#newResponse(
+          body,
+          arg,
+          setDefaultContentType('application/json', headers)
+        ) /* eslint-disable @typescript-eslint/no-explicit-any */ as any)
   }
 
   html: HTMLRespond = (
