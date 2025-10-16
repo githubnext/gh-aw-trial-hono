@@ -9,6 +9,7 @@
   "files": [
     "dist"
   ],
+  "sideEffects": false,
   "scripts": {
     "test": "tsc --noEmit && vitest --run",
     "test:fast": "vitest --run",
