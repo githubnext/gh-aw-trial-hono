@@ -15,7 +15,10 @@ export const styleObjectForEach = (
   style: Record<string, string | number>,
   fn: (key: string, value: string | null) => void
 ): void => {
-  for (const [k, v] of Object.entries(style)) {
+  // Use for...in instead of Object.entries() to avoid intermediate array allocation
+  for (const k in style) {
+    if (!style.hasOwnProperty(k)) continue
+    const v = style[k]
     const key =
       k[0] === '-' || !/[A-Z]/.test(k)
         ? k // a CSS variable or a lowercase only property
