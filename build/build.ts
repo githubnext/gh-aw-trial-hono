@@ -91,11 +91,14 @@ const esmBuild = () =>
     plugins: [addExtension('.js')],
   })
 
-Promise.all([esmBuild(), cjsBuild()])
-
-await $`tsc ${
-  isWatch ? '-w' : ''
-} --emitDeclarationOnly --declaration --project tsconfig.build.json`.nothrow()
+// Run ESM build, CJS build, and TypeScript type generation in parallel
+await Promise.all([
+  esmBuild(),
+  cjsBuild(),
+  $`tsc ${
+    isWatch ? '-w' : ''
+  } --emitDeclarationOnly --declaration --project tsconfig.build.json`.nothrow(),
+])
 
 // Remove #private fields
 const dtsEntries = glob.globSync('./dist/types/**/*.d.ts')
