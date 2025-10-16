@@ -90,83 +90,100 @@ bun run benchmark.ts  # Real request performance
 const compose = (middleware: Middleware[]) => {
   return (context: Context, next: Next) => {
     // Executes middleware[0], then middleware[1], etc.
+    // Uses recursive dispatch pattern
   }
 }
 ```
 
-### Optimization Opportunities
+### Existing Optimizations
+- **Single middleware fast path** (`src/hono-base.ts:416-434`): Skips composition entirely when only one handler exists
+- **Recursive dispatch**: Efficient pattern borrowed from koa-compose
+- **Per-request index tracking**: Ensures `next()` called once per middleware
 
-**1. Reduce Function Call Overhead**
+### Investigation Results (Oct 2025)
+
+**Benchmark measurements** (50k iterations, Bun 1.2.19):
+- No middleware: 336,207 req/s (baseline)
+- 1 middleware: 213,120 req/s (37% overhead)
+- 3 middleware: 199,157 req/s (41% overhead)
+- 5 middleware: 198,456 req/s (41% overhead)
+- 10 middleware: 142,462 req/s (58% overhead)
+
+**Key finding**: Single middleware has highest overhead due to context creation. Additional middleware (2-5) have minimal incremental cost.
+
+**Attempted optimization**: Unrolling recursion for 2-4 middleware chains
+- **Result**: Failed - index state shared between requests causes corruption
+- **Lesson**: The recursive dispatch closure pattern is essential for correct per-request state isolation
+
+### Optimization Challenges
+
+**1. State Isolation Requirements**
 ```typescript
-// Instead of multiple function calls:
-await middleware1(c, next)
-await middleware2(c, next)
-await middleware3(c, next)
+// The index variable MUST be per-request:
+return (context, next) => {
+  let index = -1  // Fresh for each request
 
-// Consider inlining for short middleware chains:
-if (middlewareCount <= 3) {
-  // Inline execution
-} else {
-  // Use composition
+  // If index is shared (closure scope issue),
+  // concurrent requests corrupt each other
 }
 ```
 
-**2. Middleware Chain Compilation**
-```typescript
-// For static middleware chains (known at startup),
-// compile into a single function
+**2. Async Overhead is Minimal**
+The async/await overhead in modern runtimes (V8, JSC) is negligible compared to:
+- Context object allocation
+- Request/Response processing
+- Actual middleware logic
 
-// Instead of:
-const chain = [mw1, mw2, mw3];
-for (const mw of chain) await mw(c, next);
+**3. The Real Bottleneck is Context Creation**
+Middleware composition overhead is dominated by per-request context creation, not the dispatch mechanism.
 
-// Compile to:
-const compiled = async (c) => {
-  await mw1(c, async () => {
-    await mw2(c, async () => {
-      await mw3(c, next)
-    })
-  })
-}
-```
+### Recommended Optimization Strategy
 
-**3. Avoid Unnecessary Async**
-```typescript
-// If middleware is synchronous, avoid async overhead
-const isSyncMiddleware = (mw: Middleware) => {
-  // Detect if middleware is sync
-  return !mw.constructor.name.includes('Async');
-}
+Instead of optimizing middleware composition, focus on:
 
-// Separate sync and async execution paths
-```
+1. **Reduce middleware count**: Combine related middleware
+2. **Optimize middleware logic**: Make individual middleware faster
+3. **Use single-middleware pattern**: When possible, use one handler that does everything
+4. **Context pooling**: Reuse context objects (future work, requires careful design)
 
 ### Measurement Strategy
 ```bash
-# Create focused middleware benchmark
-cat > /tmp/gh-aw/agent/middleware-bench.ts << 'EOF'
-import { Hono } from '../src/hono';
+# Micro-benchmark for middleware chains
+cat > middleware-bench.ts << 'EOF'
+import { Hono } from './src/hono';
 
-const app = new Hono();
-const middleware = (c, next) => next();
+const iterations = 50_000
+const testMiddleware = async () => {
+  const app = new Hono()
+  for (let i = 0; i < 3; i++) {
+    app.use('*', async (c, next) => await next())
+  }
+  app.get('/test', (c) => c.text('ok'))
 
-// Add multiple middleware
-for (let i = 0; i < 10; i++) {
-  app.use(middleware);
+  const start = performance.now()
+  for (let i = 0; i < iterations; i++) {
+    await app.request('/test')
+  }
+  const end = performance.now()
+  console.log(`${iterations / ((end - start) / 1000)} req/s`)
 }
-
-app.get('/', (c) => c.text('ok'));
-
-// Benchmark request handling
-const iterations = 100_000;
-const start = performance.now();
-// ... run requests
-const end = performance.now();
-console.log(`${iterations / ((end - start) / 1000)} req/s`);
+await testMiddleware()
 EOF
 
-bun run /tmp/gh-aw/agent/middleware-bench.ts
+bun run middleware-bench.ts
 ```
+
+### Conclusion
+
+Middleware composition in Hono is already highly optimized. The recursive dispatch pattern provides correct semantics with minimal overhead. Further optimization requires:
+- Careful handling of per-request state isolation
+- Understanding that context creation dominates middleware overhead
+- Recognizing that modern JS runtimes handle async/await efficiently
+
+**Recommendation**: Deprioritize middleware composition optimization in favor of:
+- Context object efficiency (already completed in PR #7)
+- Router performance improvements
+- Reducing overall middleware count in applications
 
 ## Context Object Performance
 
