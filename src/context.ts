@@ -603,9 +603,7 @@ export class Context<
     if (typeof arg === 'object' && 'headers' in arg) {
       const argHeaders = arg.headers instanceof Headers ? arg.headers : new Headers(arg.headers)
       for (const [key, value] of argHeaders) {
-        // Cache lowercased key to avoid repeated normalization in loop
-        const lowerKey = key.toLowerCase()
-        if (lowerKey === 'set-cookie') {
+        if (key.toLowerCase() === 'set-cookie') {
           responseHeaders.append(key, value)
         } else {
           responseHeaders.set(key, value)
