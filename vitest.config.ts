@@ -4,8 +4,16 @@ export default defineConfig({
   test: {
     globals: true,
     setupFiles: ['./.vitest.config/setup-vitest.ts'],
+    // Performance optimizations
+    // Coverage disabled by default for faster test runs - re-enable with --coverage flag when needed
+    pool: 'threads',
+    poolOptions: {
+      threads: {
+        singleThread: false,
+      },
+    },
     coverage: {
-      enabled: true,
+      enabled: false,
       provider: 'v8',
       reportsDirectory: './coverage/raw/default',
       reporter: ['json', 'text', 'html'],
