@@ -346,18 +346,107 @@ bun run benchmark.ts --runs=5
 # If any endpoint shows -5% * or worse, investigate
 ```
 
+## Historical Performance Tracking
+
+**NEW**: Hono now includes comprehensive tools for tracking performance over time.
+
+### Overview
+
+The historical tracking system provides:
+- **Persistent storage** of benchmark results in JSONL format
+- **Trend analysis** with statistical summaries
+- **Visual charts** (ASCII and HTML) for performance visualization
+- **Git integration** to correlate performance with code changes
+- **Flexible filtering** by branch, date range, and metrics
+
+### Quick Start
+
+```bash
+cd benchmarks/http-server
+
+# Run benchmark and track results
+bun run benchmark.ts --runs=3
+bun run track-performance.ts
+
+# View performance trends
+bun run analyze-performance.ts
+
+# Generate visualizations
+bun run visualize-performance.ts
+bun run visualize-performance.ts --output=chart.html  # HTML chart
+```
+
+### Available Tools
+
+1. **`track-performance.ts`** - Save benchmark results to historical database
+   ```bash
+   # Basic tracking
+   bun run track-performance.ts
+
+   # With meaningful tag
+   bun run track-performance.ts --tag="release-1.5.0"
+   ```
+
+2. **`analyze-performance.ts`** - Analyze trends and detect regressions
+   ```bash
+   # Table view (default)
+   bun run analyze-performance.ts
+
+   # Last 7 days
+   bun run analyze-performance.ts --since=7d
+
+   # Export as JSON/CSV
+   bun run analyze-performance.ts --format=json > data.json
+   ```
+
+3. **`visualize-performance.ts`** - Generate performance charts
+   ```bash
+   # ASCII chart in terminal
+   bun run visualize-performance.ts
+
+   # Interactive HTML chart
+   bun run visualize-performance.ts --output=trends.html
+   ```
+
+### Workflow Integration
+
+**Daily monitoring:**
+```bash
+# Automated daily check
+bun run benchmark.ts --runs=3
+bun run track-performance.ts --tag="daily-$(date +%Y%m%d)"
+bun run analyze-performance.ts --since=7d
+```
+
+**Release validation:**
+```bash
+# Before release
+bun run benchmark.ts --runs=5 --target=release-candidate
+bun run track-performance.ts --tag="v1.5.0-rc"
+
+# Generate release report
+bun run visualize-performance.ts --since=30d --output=release-report.html
+```
+
+**CI integration:**
+Add to CI pipeline to automatically track performance on every commit to main branch.
+
+### Documentation
+
+For complete documentation, see [PERFORMANCE_TRACKING_README.md](../../benchmarks/http-server/PERFORMANCE_TRACKING_README.md)
+
 ## Future Enhancements
 
-Potential improvements to benchmark infrastructure:
+Remaining potential improvements:
 
-1. **Automated regression detection in CI**
+1. **Automated regression detection in CI** ✅ (tools available, needs CI workflow)
    - Fail PR if performance drops > 5% with significance
    - Post performance reports automatically
 
-2. **Historical trend tracking**
-   - Database of past results
-   - Visualization of performance over time
-   - Detect gradual degradation
+2. **Historical trend tracking** ✅ **COMPLETED**
+   - Database of past results ✅
+   - Visualization of performance over time ✅
+   - Detect gradual degradation ✅
 
 3. **Multi-platform benchmarking**
    - Test across different runtimes (Node, Bun, Deno)
