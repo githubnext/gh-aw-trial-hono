@@ -10,10 +10,12 @@ export default defineConfig({
     poolOptions: {
       threads: {
         singleThread: false,
+        minThreads: 2,
+        maxThreads: 4,
       },
     },
     // Optimize test execution by increasing concurrency
-    maxConcurrency: 10,
+    maxConcurrency: 15,
     coverage: {
       enabled: false,
       provider: 'v8',
