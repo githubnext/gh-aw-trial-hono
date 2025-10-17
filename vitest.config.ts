@@ -12,6 +12,8 @@ export default defineConfig({
         singleThread: false,
       },
     },
+    // Optimize test execution by increasing concurrency
+    maxConcurrency: 10,
     coverage: {
       enabled: false,
       provider: 'v8',
