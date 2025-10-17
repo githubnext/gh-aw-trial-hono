@@ -15,7 +15,7 @@ export default defineConfig({
     // Optimize test execution by increasing concurrency
     maxConcurrency: 10,
     coverage: {
-      enabled: false,
+      enabled: false, // Disabled by default for faster test runs. Use --coverage flag when needed.
       provider: 'v8',
       reportsDirectory: './coverage/raw/default',
       reporter: ['json', 'text', 'html'],

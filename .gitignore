@@ -142,3 +142,6 @@ settings.local.json
 # Performance profiling output
 profiles/
 *.cpuprofile
+
+# Vitest cache
+.vitest/
