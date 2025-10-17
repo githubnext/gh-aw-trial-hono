@@ -327,6 +327,199 @@ URL path extraction in Hono is already highly optimized for the common case. The
 
 **Recommendation**: Do not attempt to optimize `getPath()` without strong profiling evidence showing it as a bottleneck. Focus on higher-impact areas like middleware efficiency, context allocation, or application-level caching.
 
+## Response Header Handling Performance
+
+### Location
+- `src/context.ts` - Response creation and header merging
+- Key methods: `#newResponse()`, `res` setter
+
+### Current Implementation
+
+**Response creation** (`#newResponse()` at context.ts:600-629):
+```typescript
+const responseHeaders = this.#res
+  ? new Headers(this.#res.headers)  // Full copy
+  : this.#preparedHeaders ?? new Headers()
+
+// Merge headers from ResponseInit
+for (const [key, value] of argHeaders) {
+  if (key.toLowerCase() === 'set-cookie') {
+    responseHeaders.append(key, value)
+  } else {
+    responseHeaders.set(key, value)
+  }
+}
+```
+
+**Set-cookie handling** (`res` setter at context.ts:398-418):
+```typescript
+for (const [k, v] of this.#res.headers.entries()) {
+  if (k === 'content-type') continue
+  if (k === 'set-cookie') {
+    const cookies = this.#res.headers.getSetCookie()
+    // Handle multiple cookies...
+  } else {
+    _res.headers.set(k, v)
+  }
+}
+```
+
+### Investigation Results (Oct 2025)
+
+**Header handling is on the CRITICAL PATH** - executed for most responses.
+
+**Identified optimization opportunities:**
+1. **Header copying**: `new Headers(this.#res.headers)` creates full copy on every response
+2. **Duplicate toLowerCase()**: Called on every header key in iteration loops
+3. **set-cookie detection**: Iterates all headers looking for set-cookie
+4. **Cache header parsing**: Middleware re-parses Cache-Control/Vary on every response
+
+**Attempted optimizations:**
+1. **Avoid header copy when no additional headers**: Check if headers need merging before copying
+2. **Cache toLowerCase results**: Store lowercased key in variable to avoid redundant calls
+3. **Pre-check for set-cookie**: Use `headers.has('set-cookie')` before iteration
+
+**Results:** Mixed - some micro-optimizations showed small gains (+1-4%) in specific scenarios, but introduced complexity and showed regressions in other common paths.
+
+**Benchmark data** (50k iterations, Bun 1.2.19):
+
+| Scenario | Baseline | Attempted Optimization | Result |
+|----------|----------|------------------------|--------|
+| Simple JSON (fast path) | 256,728 req/s | 260,863 req/s | +1.6% |
+| JSON with custom headers | 231,287 req/s | 235,635 req/s | +1.9% |
+| With prepared headers | 156,285 req/s | 143,743 req/s | -8.0% ⚠️ |
+| With set-cookie | 247,732 req/s | 237,563 req/s | -4.1% ⚠️ |
+| Response init headers | 133,941 req/s | 139,636 req/s | +4.3% |
+| Complex (mixed) | 154,344 req/s | 149,875 req/s | -2.9% ⚠️ |
+
+### Why Header Optimizations Are Challenging
+
+**1. Web Standards API Constraints**
+- Headers API is standardized and can't be bypassed
+- No access to internal representation
+- Copying/iteration costs are inherent to the API
+
+**2. Fast Paths Already Exist**
+```typescript
+// json() and text() already skip header merging for simple cases:
+json(data) {
+  return !this.#preparedHeaders && !this.#status && !arg && !headers
+    ? Response.json(data)  // Native fast path
+    : this.#newResponse(data, arg, headers)
+}
+```
+
+**3. Trade-offs Are Unfavorable**
+- Conditional logic to avoid header copying adds overhead
+- Benefits only apply to uncommon "no additional headers" case
+- Most responses DO have headers to merge (Content-Type, custom headers, middleware headers)
+
+**4. Modern Runtimes Already Optimize Headers**
+- V8/JSC optimize Headers object construction
+- Header copying is implemented in native code
+- JavaScript-level optimizations add overhead that offsets gains
+
+### Real Optimization Opportunities
+
+**1. Application-Level Response Caching**
+```typescript
+// Cache complete responses when possible
+const responseCache = new Map<string, Response>()
+
+app.get('/api/static', (c) => {
+  const cached = responseCache.get('/api/static')
+  if (cached) return cached.clone()
+
+  const response = c.json({ data: expensiveComputation() })
+  responseCache.set('/api/static', response.clone())
+  return response
+})
+```
+
+**2. Reduce Header Operations**
+```typescript
+// Before: Multiple header calls
+app.use('*', async (c, next) => {
+  c.header('X-Powered-By', 'Hono')
+  c.header('X-Version', '1.0')
+  c.header('X-Request-ID', generateId())
+  await next()
+})
+
+// After: Single header call with object
+app.use('*', async (c, next) => {
+  await next()
+  // Set headers only on final response
+  c.res.headers.set('X-Custom', 'all-at-once')
+})
+```
+
+**3. Middleware Consolidation**
+```typescript
+// Before: Separate middleware for headers
+app.use('*', securityHeaders())
+app.use('*', corsHeaders())
+app.use('*', cacheHeaders())
+
+// After: Combined middleware
+app.use('*', combinedHeaders({
+  security: true,
+  cors: corsConfig,
+  cache: cacheConfig
+}))
+```
+
+### Measurement Strategy
+```bash
+# Header operation benchmark
+cat > /tmp/gh-aw/agent/header-bench.ts << 'EOF'
+import { Hono } from './src/hono'
+
+const iterations = 50_000
+
+async function benchHeaderOperations() {
+  const app = new Hono()
+
+  // Test scenario (customize as needed)
+  app.use('*', async (c, next) => {
+    c.header('X-Custom-1', 'value1')
+    c.header('X-Custom-2', 'value2')
+    await next()
+  })
+  app.get('/test', (c) => c.json({ ok: true }))
+
+  const start = performance.now()
+  for (let i = 0; i < iterations; i++) {
+    await app.request('/test')
+  }
+  const end = performance.now()
+
+  console.log(`${iterations / ((end - start) / 1000)} req/s`)
+}
+
+await benchHeaderOperations()
+EOF
+
+bun run /tmp/gh-aw/agent/header-bench.ts
+```
+
+### Conclusion
+
+Response header handling in Hono is already well-optimized given the constraints of the Web Standards Headers API. The fast paths for simple responses (json/text without headers) provide good performance for common cases.
+
+**Micro-optimizations to header copying/iteration:**
+- Add complexity
+- Provide inconsistent benefits across workloads
+- Often regress performance in common cases
+
+**Recommendation**: Focus on application-level optimizations:
+- Response caching
+- Reducing header operations
+- Middleware consolidation
+- Avoiding unnecessary header reads/writes
+
+Only consider framework-level header optimizations if profiling shows header operations consuming >10% of response time, which is rare for typical applications.
+
 ## Context Object Performance
 
 ### Location
