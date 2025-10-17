@@ -34,7 +34,10 @@ export default defineConfig({
       ],
     },
     projects: [
-      './runtime-tests/*/vitest.config.ts',
+      // Runtime test projects (Node, Lambda, Workers, etc.) are opt-in for faster local development
+      // Enable with: HONO_TEST_RUNTIME=1 bun run test
+      // CI should always run with HONO_TEST_RUNTIME=1 for full coverage
+      ...(process.env.HONO_TEST_RUNTIME === '1' ? ['./runtime-tests/*/vitest.config.ts'] : []),
       {
         esbuild: {
           jsx: 'automatic',
