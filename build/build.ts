@@ -73,6 +73,14 @@ const commonOptions: BuildOptions = {
   platform: 'node',
 }
 
+const timeStep = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+  const start = performance.now()
+  const result = await fn()
+  const duration = performance.now() - start
+  console.log(`[Build Timing] ${name}: ${duration.toFixed(0)}ms`)
+  return result
+}
+
 const cjsBuild = () =>
   build({
     ...commonOptions,
@@ -92,31 +100,57 @@ const esmBuild = () =>
   })
 
 // Run ESM build, CJS build, and TypeScript type generation in parallel
+console.log('[Build Timing] Starting parallel build phase...')
+const parallelStart = performance.now()
 await Promise.all([
-  esmBuild(),
-  cjsBuild(),
-  $`tsc ${
-    isWatch ? '-w' : ''
-  } --emitDeclarationOnly --declaration --project tsconfig.build.json`.nothrow(),
+  timeStep('ESM Build', esmBuild),
+  timeStep('CJS Build', cjsBuild),
+  timeStep('TypeScript', () =>
+    $`tsc ${
+      isWatch ? '-w' : ''
+    } --emitDeclarationOnly --declaration --project tsconfig.build.json`.nothrow()
+  ),
 ])
+console.log(
+  `[Build Timing] Parallel build phase completed: ${(performance.now() - parallelStart).toFixed(
+    0
+  )}ms`
+)
 
 // Remove #private fields
+console.log('[Build Timing] Starting private field removal...')
+const privateFieldStart = performance.now()
 const dtsEntries = glob.globSync('./dist/types/**/*.d.ts')
 const writer = stdout.writer()
 writer.write('\n')
 let lastOutputLength = 0
 let removedCount = 0
 
-await Promise.all(
-  dtsEntries.map(async (e) => {
-    await fs.promises.writeFile(e, await removePrivateFields(e))
+// Process in batches to reduce overhead
+const BATCH_SIZE = 50
+for (let i = 0; i < dtsEntries.length; i += BATCH_SIZE) {
+  const batch = dtsEntries.slice(i, i + BATCH_SIZE)
+  await Promise.all(
+    batch.map(async (e) => {
+      const content = await fs.promises.readFile(e, 'utf-8')
+      const processed = await removePrivateFields(e, content)
+      await fs.promises.writeFile(e, processed)
 
-    const message = `Private fields removed(${++removedCount}/${dtsEntries.length}): ${e}`
-    writer.write(`\r${' '.repeat(lastOutputLength)}`)
-    lastOutputLength = message.length
-    writer.write(`\r${message}`)
-  })
-)
+      const message = `Private fields removed(${++removedCount}/${dtsEntries.length}): ${e}`
+      writer.write(`\r${' '.repeat(lastOutputLength)}`)
+      lastOutputLength = message.length
+      writer.write(`\r${message}`)
+    })
+  )
+}
 
 writer.write('\n')
 cleanupWorkers()
+console.log(
+  `[Build Timing] Private field removal completed: ${(
+    performance.now() - privateFieldStart
+  ).toFixed(0)}ms`
+)
+
+const totalTime = performance.now() - parallelStart
+console.log(`\n[Build Timing] Total build time: ${(totalTime / 1000).toFixed(2)}s`)
