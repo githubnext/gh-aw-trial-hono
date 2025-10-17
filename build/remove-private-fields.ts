@@ -7,7 +7,7 @@ const workers = Array.from({ length: Math.ceil(cpus().length / 2) }).map(
 let workerIndex = 0
 let taskId = 0
 
-export async function removePrivateFields(file: string): Promise<string> {
+export async function removePrivateFields(file: string, content?: string): Promise<string> {
   const currentTaskId = taskId++
   const worker = workers[workerIndex]
   workerIndex = (workerIndex + 1) % workers.length
@@ -29,7 +29,7 @@ export async function removePrivateFields(file: string): Promise<string> {
       },
       { signal: abortController.signal }
     )
-    worker.postMessage({ file, taskId: currentTaskId } satisfies WorkerInput)
+    worker.postMessage({ file, content, taskId: currentTaskId } satisfies WorkerInput)
   })
 }
 

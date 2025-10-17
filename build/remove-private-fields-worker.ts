@@ -2,6 +2,7 @@ import * as ts from 'typescript'
 
 export type WorkerInput = {
   file: string
+  content?: string
   taskId: number
 }
 
@@ -53,15 +54,21 @@ const removePrivateTransformer = <T extends ts.Node>(ctx: ts.TransformationConte
   }
 }
 
-export const removePrivateFields = (tsPath: string) => {
-  const program = ts.createProgram([tsPath], {
-    target: ts.ScriptTarget.ESNext,
-    module: ts.ModuleKind.ESNext,
-  })
-  const file = program.getSourceFile(tsPath)
+// Cache printer for reuse across all files
+const printer = ts.createPrinter()
 
-  const transformed = ts.transform(file!, [removePrivateTransformer])
-  const printer = ts.createPrinter()
+export const removePrivateFields = (tsPath: string, content?: string) => {
+  // Read file content directly instead of creating a full program
+  const fileContent = content ?? require('fs').readFileSync(tsPath, 'utf-8')
+  const sourceFile = ts.createSourceFile(
+    tsPath,
+    fileContent,
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TS
+  )
+
+  const transformed = ts.transform(sourceFile, [removePrivateTransformer])
   const transformedSourceFile = transformed.transformed[0] as ts.SourceFile
   const code = printer.printFile(transformedSourceFile)
   transformed.dispose()
@@ -72,10 +79,10 @@ declare const self: Worker
 
 if (globalThis.self) {
   self.addEventListener('message', function (e) {
-    const { file, taskId } = e.data as WorkerInput
+    const { file, content, taskId } = e.data as WorkerInput
 
     try {
-      const result = removePrivateFields(file)
+      const result = removePrivateFields(file, content)
       self.postMessage({ type: 'success', value: result, taskId } satisfies WorkerOutput)
     } catch (e) {
       console.error(e)
