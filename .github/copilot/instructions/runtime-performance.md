@@ -872,6 +872,147 @@ Skip optimization if:
 
 **Remember**: Code clarity and maintainability often outweigh minor performance improvements. Optimize when it meaningfully improves user experience.
 
+## Cookie Serialization Performance
+
+### Location
+
+- `src/utils/cookie.ts` - Cookie parsing and serialization utilities
+- Key functions: `parse()` (lines 79-112), `_serialize()` (lines 141-222)
+
+### Current Implementation
+
+**Cookie serialization** (`_serialize()` at cookie.ts:141-222):
+
+```typescript
+const _serialize = (name: string, value: string, opt: CookieOptions = {}): string => {
+  let cookie = `${name}=${value}`
+
+  // Validation checks...
+
+  if (opt.maxAge) {
+    cookie += `; Max-Age=${opt.maxAge | 0}`
+  }
+
+  if (opt.domain) {
+    cookie += `; Domain=${opt.domain}`
+  }
+
+  // ... more attribute concatenation
+
+  return cookie
+}
+```
+
+### Investigation Results (Oct 2025)
+
+**Cookie serialization is frequently used** in web applications for authentication, session management, and user tracking.
+
+**Baseline performance** (100k iterations, Bun 1.2.19):
+
+- Simple cookie: 5.72M ops/sec (174.91 ns/op)
+- With path: 6.41M ops/sec (156.05 ns/op)
+- With full options: 3.42M ops/sec (292.62 ns/op)
+
+**Attempted optimization**: Replace string concatenation (`cookie +=`) with array building + `join('; ')`.
+
+**Rationale**: Traditional advice suggests array+join is faster than repeated string concatenation.
+
+**Result**: **Significant performance regression** across all scenarios:
+
+- Simple cookie: -12.8% slower (5.72M → 4.99M ops/sec)
+- With path: -51.8% slower (6.41M → 3.09M ops/sec)
+- With full options: -61.1% slower (3.42M → 1.33M ops/sec)
+
+**Why the current implementation is optimal:**
+
+1. **Modern engines optimize string concatenation**
+   - V8/JSC use rope data structures that defer copying
+   - String concatenation with `+=` is JIT-optimized
+   - Small, incremental concatenations are very fast
+
+2. **Array+join introduces overhead**
+   - Array allocation and resizing
+   - Function call overhead for `.join()`
+   - Temporary string creation during join operation
+
+3. **Cookie strings are typically small**
+   - Most cookies: 50-200 characters
+   - Concatenation is faster than array management for small strings
+   - The crossover point (where array+join wins) is much larger (1000s of characters)
+
+4. **The pattern is predictable**
+   - Engines can inline and optimize the simple `cookie += string` pattern
+   - Linear execution with predictable branches
+
+**Lesson learned**: String concatenation performance has improved dramatically in modern engines. The old "array+join is faster" wisdom no longer applies for small-to-medium string building. Always benchmark!
+
+### When to Optimize Cookie Operations
+
+Only consider cookie serialization optimization if:
+
+1. CPU profiling shows `_serialize()` consuming >5% of request time
+2. Application sets cookies on most/all requests
+3. Benchmarks demonstrate clear improvement (>10%) across typical cookie configurations
+
+For 99% of applications, cookie serialization performance is NOT a bottleneck.
+
+### Measurement Strategy
+
+```bash
+# Cookie serialization benchmark
+cat > /tmp/gh-aw/agent/cookie-bench.ts << 'EOF'
+import { serialize } from '../src/utils/cookie'
+
+const iterations = 100_000
+
+const tests = [
+  { name: 'simple', value: 'abc123', opts: {} },
+  { name: 'with-path', value: 'abc123', opts: { path: '/' } },
+  {
+    name: 'full',
+    value: 'abc123',
+    opts: {
+      path: '/',
+      domain: 'example.com',
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Lax' as const,
+      maxAge: 3600
+    }
+  },
+]
+
+for (const { name, value, opts } of tests) {
+  const start = performance.now()
+  for (let i = 0; i < iterations; i++) {
+    serialize('sessionId', value, opts)
+  }
+  const end = performance.now()
+  const opsPerSec = iterations / ((end - start) / 1000)
+  console.log(`${name}: ${opsPerSec.toFixed(0)} ops/sec`)
+}
+EOF
+
+bun run /tmp/gh-aw/agent/cookie-bench.ts
+```
+
+### Conclusion
+
+Cookie serialization in Hono is already well-optimized. String concatenation with `+=` is faster than array-based string building for typical cookie sizes and attribute counts.
+
+**Attempted micro-optimizations (array+join, helper functions for case normalization):**
+
+- Add code complexity
+- Regress performance significantly (-12% to -61%)
+- Contradict modern engine optimization strategies
+
+**Recommendation**: Do not attempt to optimize cookie serialization without strong profiling evidence. Focus on higher-impact areas like:
+
+- Reducing unnecessary cookie operations
+- Caching serialized cookies when values don't change
+- Using signed cookies only when needed (crypto operations are expensive)
+- Application-level optimization (fewer cookies, smaller values)
+
 ## General Performance Principles
 
 ### 1. Hot Path Optimization
