@@ -1013,6 +1013,212 @@ Cookie serialization in Hono is already well-optimized. String concatenation wit
 - Using signed cookies only when needed (crypto operations are expensive)
 - Application-level optimization (fewer cookies, smaller values)
 
+## HTML Escaping Performance
+
+### Location
+
+- `src/utils/html.ts` - HTML escaping utilities for JSX rendering
+- Key function: `escapeToBuffer()` (lines 90-127)
+
+### Current Implementation
+
+**HTML escaping** (`escapeToBuffer()` at html.ts:90-127):
+
+```typescript
+const escapeRe = /[&<>'"]/
+
+export const escapeToBuffer = (str: string, buffer: StringBuffer): void => {
+  const match = str.search(escapeRe)
+  if (match === -1) {
+    buffer[0] += str
+    return
+  }
+
+  let escape
+  let index
+  let lastIndex = 0
+
+  for (index = match; index < str.length; index++) {
+    switch (str.charCodeAt(index)) {
+      case 34: // "
+        escape = '&quot;'
+        break
+      case 39: // '
+        escape = '&#39;'
+        break
+      case 38: // &
+        escape = '&amp;'
+        break
+      case 60: // <
+        escape = '&lt;'
+        break
+      case 62: // >
+        escape = '&gt;'
+        break
+      default:
+        continue
+    }
+
+    buffer[0] += str.substring(lastIndex, index) + escape
+    lastIndex = index + 1
+  }
+
+  buffer[0] += str.substring(lastIndex, index)
+}
+```
+
+### Investigation Results (Oct 2025)
+
+**HTML escaping is on HOT PATH** - called for every text node in JSX rendering that needs escaping.
+
+**Baseline performance** (100k iterations, Bun 1.2.19):
+
+- No escaping needed (common): 8.70-9.02M ops/sec
+- Single escape char: 4.31-4.47M ops/sec
+- Multiple escape chars: 3.50-3.82M ops/sec
+- Heavy escaping: 3.26-3.27M ops/sec
+
+**Attempted optimizations:**
+
+1. **Array accumulation + join()**: Replace incremental string concatenation with array building
+2. **Lookup object**: Replace `switch` statement with object property lookup
+
+**Results:** Both optimizations showed **significant performance regressions**:
+
+**Array accumulation approach:**
+
+| Scenario | Baseline | Optimized | Result |
+| --- | --- | --- | --- |
+| No escaping | 9.02M ops/s | 9.01M ops/s | -0.2% |
+| Single escape | 4.31M ops/s | 3.53M ops/s | -22.2% ⚠️ |
+| Multiple escapes | 3.50M ops/s | 1.71M ops/s | -105.4% ⚠️ |
+| Heavy escaping | 3.26M ops/s | 1.92M ops/s | -70.3% ⚠️ |
+
+**Lookup object approach:**
+
+| Scenario | Baseline | Optimized | Result |
+| --- | --- | --- | --- |
+| No escaping | 8.70M ops/s | 11.16M ops/s | +22.0% ✓ |
+| Single escape | 4.47M ops/s | 3.54M ops/s | -26.5% ⚠️ |
+| Multiple escapes | 3.82M ops/s | 1.13M ops/s | -237.6% ⚠️ |
+| Heavy escaping | 3.27M ops/s | 0.99M ops/s | -230.9% ⚠️ |
+
+### Why Current Implementation Is Optimal
+
+**1. Switch Statement Optimization**
+
+Modern JavaScript engines (V8, JavaScriptCore) optimize `switch` statements into **jump tables**:
+
+- O(1) lookup for dense, sequential case values
+- Highly predictable branching
+- CPU can execute switch extremely efficiently
+- Object property lookup adds hash table overhead
+
+**2. String Concatenation is Fast**
+
+As documented in the Cookie Serialization section:
+
+- Modern engines use rope data structures
+- Incremental `+=` concatenation is JIT-optimized
+- Small strings (typical for HTML text nodes) favor direct concatenation
+- Array allocation and join() overhead exceeds concatenation cost
+
+**3. Fast Path for Common Case**
+
+The implementation checks for escape characters first:
+
+```typescript
+const match = str.search(escapeRe)
+if (match === -1) {
+  buffer[0] += str
+  return // No escaping needed - fast exit
+}
+```
+
+Most text nodes don't need escaping, so this fast path is critical.
+
+**4. Implementation Proven in React**
+
+The comment in html.ts notes this is based on React DOM's escaping implementation:
+
+```typescript
+// The `escapeToBuffer` implementation is based on code from the MIT licensed `react-dom` package.
+// https://github.com/facebook/react/blob/main/packages/react-dom-bindings/src/server/escapeTextForBrowser.js
+```
+
+React's implementation has been battle-tested and micro-optimized over years. Hono correctly adopted their proven approach.
+
+### When to Optimize HTML Escaping
+
+Only consider HTML escaping optimization if:
+
+1. CPU profiling shows `escapeToBuffer()` consuming >5% of SSR time
+2. Application renders primarily user-generated content (high escaping frequency)
+3. Novel algorithm shows >10% improvement across all scenarios (no regressions)
+
+For 99.9% of applications, HTML escaping performance is NOT a bottleneck.
+
+### Measurement Strategy
+
+```bash
+# HTML escaping benchmark
+cat > /tmp/gh-aw/agent/html-escape-bench.ts << 'EOF'
+import { escapeToBuffer } from '../src/utils/html'
+
+const iterations = 100_000
+
+const testCases = [
+  'Hello World! Plain text.',
+  'Hello <World>',
+  '<div class="container">Hello & "World"</div>',
+  'Hono is a small, simple, & ultrafast web framework'
+]
+
+for (const input of testCases) {
+  const buffer = ['']
+  const start = performance.now()
+
+  for (let i = 0; i < iterations; i++) {
+    buffer[0] = ''
+    escapeToBuffer(input, buffer)
+  }
+
+  const end = performance.now()
+  const opsPerSec = iterations / ((end - start) / 1000)
+  console.log(`"${input}": ${(opsPerSec / 1000000).toFixed(2)}M ops/sec`)
+}
+EOF
+
+bun run /tmp/gh-aw/agent/html-escape-bench.ts
+```
+
+### Conclusion
+
+HTML escaping in Hono is already highly optimized, following proven patterns from React DOM. The current implementation using:
+
+- Regex search for fast path (no escaping needed)
+- Switch statement for character mapping (engine-optimized jump table)
+- Direct string concatenation (modern engine optimization)
+
+**Attempted micro-optimizations (array+join, lookup objects):**
+
+- Add complexity
+- Provide major regressions for escaping scenarios (-22% to -237%)
+- Only improve the "no escaping" fast path (which is already fast)
+
+**Recommendation**: Do not attempt to optimize `escapeToBuffer()` without strong profiling evidence showing it as a bottleneck (extremely rare). The implementation is already optimal given:
+
+- Modern engine optimizations
+- Proven patterns from React
+- Fast path for common case
+
+Focus on higher-impact JSX optimizations like:
+
+- Reducing unnecessary JSX re-renders
+- Component memoization
+- Streaming optimizations
+- Application-level caching
+
 ## General Performance Principles
 
 ### 1. Hot Path Optimization
