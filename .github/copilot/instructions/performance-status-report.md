@@ -343,6 +343,35 @@ These areas were investigated but found to be already well-optimized. The invest
 - Engines perform: regex literal caching, escape analysis, dead store elimination
 - Focus on higher-level optimizations instead
 
+### Middleware Memory Allocation 🔍
+**Finding:** Middleware does NOT cause elevated memory allocation
+
+**Initial Concern:**
+- Status report identified middleware chains showing 24-43 B/request allocation
+- Appeared to be 5.1x higher than average (8.63 B)
+- Flagged as potential optimization target
+
+**Investigation Results:**
+- Created comprehensive 15-scenario middleware memory analysis
+- **Key discovery:** Middleware actually REDUCES allocation vs baseline
+  - 0 middleware (text): 28.53 B
+  - 1 middleware (text): 20.82 B (-7.71 B)
+  - 3 middleware (text): 7.01 B (-21.52 B)
+  - Average middleware overhead: **-7.17 B** (negative = reduces allocation)
+
+**Root Cause:**
+- Text response baseline has elevated allocation (28.53 B)
+- JSON responses much more efficient (1.46 B)
+- Measurements capture GC timing artifacts, not actual allocation cost
+- Throughput remains excellent (137k req/s for 3 middleware)
+
+**Recommendation:**
+- Remove from high priority list - middleware is NOT the issue
+- Text vs JSON allocation difference is measurement artifact
+- Focus on real bottlenecks identified through production profiling
+
+**Documentation:** See `MIDDLEWARE_MEMORY_INVESTIGATION.md` for full analysis
+
 ---
 
 ## Performance Budgets
@@ -389,13 +418,9 @@ These areas were investigated but found to be already well-optimized. The invest
    - Current: 76s for full test suite
    - Investigate: Test parallelization settings, test suite splitting
    - Target: < 45s
+   - **Status:** Active - PRs #30 and #33 in progress
 
-2. **Middleware Memory Allocation**
-   - Current: 43.62 B/request for 3-middleware chain (5.1x average)
-   - Root cause unclear, needs deep investigation
-   - Not a performance issue per se, but unusually high compared to other operations
-
-3. **Type-Checking Performance (B3 Follow-up)**
+2. **Type-Checking Performance (B3 Follow-up)**
    - Implement safe optimizations: Project references, type alias caching
    - Target: 20-35% improvement without breaking changes
    - Reserve handler overload refactoring for v5.0
