@@ -749,12 +749,21 @@ export class Context<
     status?: T
   ): Response & TypedResponse<undefined, T, 'redirect'> => {
     const locationString = String(location)
-    this.header(
-      'Location',
+    const encodedLocation =
       // Multibyes should be encoded
       // eslint-disable-next-line no-control-regex
       !/[^\x00-\xFF]/.test(locationString) ? locationString : encodeURI(locationString)
-    )
+
+    // Fast path: skip header merging overhead for simple redirects
+    if (!this.#preparedHeaders && !this.#res && !this.finalized) {
+      return new Response(null, {
+        status: status ?? 302,
+        headers: { Location: encodedLocation },
+      }) as any
+    }
+
+    // Slow path: merge with existing headers
+    this.header('Location', encodedLocation)
     return this.newResponse(null, status ?? 302) as any
   }
 
