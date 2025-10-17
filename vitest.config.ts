@@ -5,7 +5,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./.vitest.config/setup-vitest.ts'],
     coverage: {
-      enabled: true,
+      enabled: false, // Disabled by default for faster test runs. Use --coverage flag when needed.
       provider: 'v8',
       reportsDirectory: './coverage/raw/default',
       reporter: ['json', 'text', 'html'],
