@@ -5,6 +5,7 @@ This guide covers optimizations for Hono's runtime performance - the hot path th
 ## Critical Performance Paths
 
 Every HTTP request in Hono follows this path:
+
 1. **Router lookup**: Match URL to handler
 2. **Middleware execution**: Run middleware chain
 3. **Context creation/access**: Request context management
@@ -16,6 +17,7 @@ Optimizations to any of these steps directly impact throughput and latency.
 ## Router Performance
 
 ### Current State
+
 - Multiple router implementations: RegExpRouter (default), TrieRouter, SmartRouter, LinearRouter, PatternRouter
 - RegExpRouter is highlighted as "really fast" - no linear loops
 - Already highly optimized with wildcard RegExp caching
@@ -29,12 +31,14 @@ Investigated optimizing `findMiddleware()` function which sorts middleware keys 
 **Attempted optimization**: Cache sorted middleware keys to avoid repeated O(n log n) sorting.
 
 **Result**: No measurable improvement for typical workloads:
+
 - Most applications have 0-5 wildcard middleware patterns
 - Sorting overhead is negligible for small n (microseconds)
 - Cache management overhead offsets potential gains
 - Current implementation is already optimal for common case
 
 **Benchmark data** (100 iterations, 5 middleware + 200 routes):
+
 - Baseline: 2.09ms per app initialization
 - With caching: 2.16ms (slightly worse due to Map allocation overhead)
 
@@ -43,6 +47,7 @@ Investigated optimizing `findMiddleware()` function which sorts middleware keys 
 ### Real Optimization Opportunities
 
 **1. Route Compilation Caching (Already Implemented)**
+
 ```typescript
 // Location: src/router/reg-exp-router/router.ts:19-28
 // Wildcard RegExp patterns are cached in wildcardRegExpCache
@@ -51,19 +56,23 @@ function buildWildcardRegExp(path: string): RegExp {
   return (wildcardRegExpCache[path] ??= new RegExp(/* ... */))
 }
 ```
+
 ✅ Already optimized - no action needed.
 
 **2. Static Path Fast Path (Already Implemented)**
+
 ```typescript
 // Location: src/router/reg-exp-router/matcher.ts:17-20
 const staticMatch = matcher[2][path]
 if (staticMatch) {
-  return staticMatch  // O(1) lookup, bypasses regex matching
+  return staticMatch // O(1) lookup, bypasses regex matching
 }
 ```
+
 ✅ Already optimized - no action needed.
 
 **3. Potential Future Optimizations**
+
 - **HTTP Method-specific routing**: Pre-filter routes by HTTP method before matching
 - **Trie node structure**: Investigate cache-friendly memory layouts (complex trade-off)
 - **JIT compilation**: For apps with 1000s of routes, consider generating specialized matching code
@@ -71,6 +80,7 @@ if (staticMatch) {
 ### When to Optimize Router
 
 Only consider router optimization if:
+
 1. Profiling shows router matching is >10% of request time
 2. Application has 100+ routes with complex patterns
 3. Measurable P99 latency impact on production traffic
@@ -78,6 +88,7 @@ Only consider router optimization if:
 For most applications, router performance is NOT the bottleneck.
 
 ### Measurement Strategy
+
 ```bash
 # Router lookup benchmark (comparing implementations)
 cd benchmarks/routers
@@ -110,10 +121,12 @@ bun run /tmp/router-bench.ts
 ## Middleware Composition Performance
 
 ### Location
+
 - `src/compose.ts` - Middleware composition
 - `src/hono-base.ts` - Middleware execution
 
 ### Current Implementation
+
 ```typescript
 // Middleware chain is composed and executed sequentially
 const compose = (middleware: Middleware[]) => {
@@ -125,6 +138,7 @@ const compose = (middleware: Middleware[]) => {
 ```
 
 ### Existing Optimizations
+
 - **Single middleware fast path** (`src/hono-base.ts:416-434`): Skips composition entirely when only one handler exists
 - **Recursive dispatch**: Efficient pattern borrowed from koa-compose
 - **Per-request index tracking**: Ensures `next()` called once per middleware
@@ -132,6 +146,7 @@ const compose = (middleware: Middleware[]) => {
 ### Investigation Results (Oct 2025)
 
 **Benchmark measurements** (50k iterations, Bun 1.2.19):
+
 - No middleware: 336,207 req/s (baseline)
 - 1 middleware: 213,120 req/s (37% overhead)
 - 3 middleware: 199,157 req/s (41% overhead)
@@ -141,16 +156,18 @@ const compose = (middleware: Middleware[]) => {
 **Key finding**: Single middleware has highest overhead due to context creation. Additional middleware (2-5) have minimal incremental cost.
 
 **Attempted optimization**: Unrolling recursion for 2-4 middleware chains
+
 - **Result**: Failed - index state shared between requests causes corruption
 - **Lesson**: The recursive dispatch closure pattern is essential for correct per-request state isolation
 
 ### Optimization Challenges
 
 **1. State Isolation Requirements**
+
 ```typescript
 // The index variable MUST be per-request:
 return (context, next) => {
-  let index = -1  // Fresh for each request
+  let index = -1 // Fresh for each request
 
   // If index is shared (closure scope issue),
   // concurrent requests corrupt each other
@@ -159,6 +176,7 @@ return (context, next) => {
 
 **2. Async Overhead is Minimal**
 The async/await overhead in modern runtimes (V8, JSC) is negligible compared to:
+
 - Context object allocation
 - Request/Response processing
 - Actual middleware logic
@@ -176,6 +194,7 @@ Instead of optimizing middleware composition, focus on:
 4. **Context pooling**: Reuse context objects (future work, requires careful design)
 
 ### Measurement Strategy
+
 ```bash
 # Micro-benchmark for middleware chains
 cat > middleware-bench.ts << 'EOF'
@@ -205,11 +224,13 @@ bun run middleware-bench.ts
 ### Conclusion
 
 Middleware composition in Hono is already highly optimized. The recursive dispatch pattern provides correct semantics with minimal overhead. Further optimization requires:
+
 - Careful handling of per-request state isolation
 - Understanding that context creation dominates middleware overhead
 - Recognizing that modern JS runtimes handle async/await efficiently
 
 **Recommendation**: Deprioritize middleware composition optimization in favor of:
+
 - Context object efficiency (already completed in PR #7)
 - Router performance improvements
 - Reducing overall middleware count in applications
@@ -217,10 +238,12 @@ Middleware composition in Hono is already highly optimized. The recursive dispat
 ## URL Path Extraction Performance
 
 ### Location
+
 - `src/utils/url.ts` - URL parsing utilities
 - Key function: `getPath()` (lines 106-125)
 
 ### Current Implementation
+
 ```typescript
 export const getPath = (request: Request): string => {
   const url = request.url
@@ -228,12 +251,14 @@ export const getPath = (request: Request): string => {
   let i = start
   for (; i < url.length; i++) {
     const charCode = url.charCodeAt(i)
-    if (charCode === 37) { // '%'
+    if (charCode === 37) {
+      // '%'
       // Handle percent encoding
       const queryIndex = url.indexOf('?', i)
       const path = url.slice(start, queryIndex === -1 ? undefined : queryIndex)
       return tryDecodeURI(path.includes('%25') ? path.replace(/%25/g, '%2525') : path)
-    } else if (charCode === 63) { // '?'
+    } else if (charCode === 63) {
+      // '?'
       break
     }
   }
@@ -246,6 +271,7 @@ export const getPath = (request: Request): string => {
 **Path extraction is CRITICAL HOT PATH** - called for every single HTTP request.
 
 **Baseline performance** (1M iterations, Bun 1.2.19):
+
 - Simple path (`/api/users`): 18.2M ops/sec (54.8ns/op)
 - Path with query (`/api/users?id=123`): 17.2M ops/sec (57.9ns/op)
 - Root path (`/`): 22.8M ops/sec (43.8ns/op)
@@ -257,6 +283,7 @@ export const getPath = (request: Request): string => {
 **Rationale**: Multiple `indexOf` calls could be faster than manual iteration.
 
 **Result**: **Performance regression** across typical workloads:
+
 - Simple path: -2.9% slower (extra `indexOf` overhead)
 - Path with query: -4.4% slower
 - Root path: +12.0% faster (only case that improved)
@@ -266,14 +293,17 @@ export const getPath = (request: Request): string => {
 **Why the current implementation is optimal:**
 
 1. **Character-by-character scan is highly optimized in V8/JSC**
+
    - Modern JIT compilers optimize tight loops extremely well
    - Direct charCode access is faster than string search
 
 2. **Single-pass design minimizes work**
+
    - Current: One scan that checks both `%` and `?` simultaneously
    - Attempted: Multiple `indexOf` passes = redundant work
 
 3. **Fast path for common case (no encoding, no query)**
+
    - Most URLs are simple: `/api/users`, `/products/123`
    - Current implementation: Scan once, return immediately
    - Attempted optimization: Three `indexOf` calls before returning
@@ -287,6 +317,7 @@ export const getPath = (request: Request): string => {
 ### When to Optimize URL Parsing
 
 Only consider URL parsing optimization if:
+
 1. CPU profiling shows `getPath()` consuming >5% of request time
 2. Benchmarks demonstrate clear improvement (>10%) across all URL patterns
 3. You have a novel algorithm backed by research/data
@@ -294,6 +325,7 @@ Only consider URL parsing optimization if:
 For 99.9% of applications, URL parsing performance is NOT a bottleneck.
 
 ### Measurement Strategy
+
 ```bash
 # Micro-benchmark path extraction
 cat > /tmp/gh-aw/agent/path-bench.ts << 'EOF'
@@ -330,15 +362,17 @@ URL path extraction in Hono is already highly optimized for the common case. The
 ## Response Header Handling Performance
 
 ### Location
+
 - `src/context.ts` - Response creation and header merging
 - Key methods: `#newResponse()`, `res` setter
 
 ### Current Implementation
 
 **Response creation** (`#newResponse()` at context.ts:600-629):
+
 ```typescript
 const responseHeaders = this.#res
-  ? new Headers(this.#res.headers)  // Full copy
+  ? new Headers(this.#res.headers) // Full copy
   : this.#preparedHeaders ?? new Headers()
 
 // Merge headers from ResponseInit
@@ -352,6 +386,7 @@ for (const [key, value] of argHeaders) {
 ```
 
 **Set-cookie handling** (`res` setter at context.ts:398-418):
+
 ```typescript
 for (const [k, v] of this.#res.headers.entries()) {
   if (k === 'content-type') continue
@@ -369,12 +404,14 @@ for (const [k, v] of this.#res.headers.entries()) {
 **Header handling is on the CRITICAL PATH** - executed for most responses.
 
 **Identified optimization opportunities:**
+
 1. **Header copying**: `new Headers(this.#res.headers)` creates full copy on every response
 2. **Duplicate toLowerCase()**: Called on every header key in iteration loops
 3. **set-cookie detection**: Iterates all headers looking for set-cookie
 4. **Cache header parsing**: Middleware re-parses Cache-Control/Vary on every response
 
 **Attempted optimizations:**
+
 1. **Avoid header copy when no additional headers**: Check if headers need merging before copying
 2. **Cache toLowerCase results**: Store lowercased key in variable to avoid redundant calls
 3. **Pre-check for set-cookie**: Use `headers.has('set-cookie')` before iteration
@@ -383,23 +420,25 @@ for (const [k, v] of this.#res.headers.entries()) {
 
 **Benchmark data** (50k iterations, Bun 1.2.19):
 
-| Scenario | Baseline | Attempted Optimization | Result |
-|----------|----------|------------------------|--------|
-| Simple JSON (fast path) | 256,728 req/s | 260,863 req/s | +1.6% |
-| JSON with custom headers | 231,287 req/s | 235,635 req/s | +1.9% |
-| With prepared headers | 156,285 req/s | 143,743 req/s | -8.0% ⚠️ |
-| With set-cookie | 247,732 req/s | 237,563 req/s | -4.1% ⚠️ |
-| Response init headers | 133,941 req/s | 139,636 req/s | +4.3% |
-| Complex (mixed) | 154,344 req/s | 149,875 req/s | -2.9% ⚠️ |
+| Scenario                 | Baseline      | Attempted Optimization | Result   |
+| ------------------------ | ------------- | ---------------------- | -------- |
+| Simple JSON (fast path)  | 256,728 req/s | 260,863 req/s          | +1.6%    |
+| JSON with custom headers | 231,287 req/s | 235,635 req/s          | +1.9%    |
+| With prepared headers    | 156,285 req/s | 143,743 req/s          | -8.0% ⚠️ |
+| With set-cookie          | 247,732 req/s | 237,563 req/s          | -4.1% ⚠️ |
+| Response init headers    | 133,941 req/s | 139,636 req/s          | +4.3%    |
+| Complex (mixed)          | 154,344 req/s | 149,875 req/s          | -2.9% ⚠️ |
 
 ### Why Header Optimizations Are Challenging
 
 **1. Web Standards API Constraints**
+
 - Headers API is standardized and can't be bypassed
 - No access to internal representation
 - Copying/iteration costs are inherent to the API
 
 **2. Fast Paths Already Exist**
+
 ```typescript
 // json() and text() already skip header merging for simple cases:
 json(data) {
@@ -410,11 +449,13 @@ json(data) {
 ```
 
 **3. Trade-offs Are Unfavorable**
+
 - Conditional logic to avoid header copying adds overhead
 - Benefits only apply to uncommon "no additional headers" case
 - Most responses DO have headers to merge (Content-Type, custom headers, middleware headers)
 
 **4. Modern Runtimes Already Optimize Headers**
+
 - V8/JSC optimize Headers object construction
 - Header copying is implemented in native code
 - JavaScript-level optimizations add overhead that offsets gains
@@ -422,6 +463,7 @@ json(data) {
 ### Real Optimization Opportunities
 
 **1. Application-Level Response Caching**
+
 ```typescript
 // Cache complete responses when possible
 const responseCache = new Map<string, Response>()
@@ -437,6 +479,7 @@ app.get('/api/static', (c) => {
 ```
 
 **2. Reduce Header Operations**
+
 ```typescript
 // Before: Multiple header calls
 app.use('*', async (c, next) => {
@@ -455,6 +498,7 @@ app.use('*', async (c, next) => {
 ```
 
 **3. Middleware Consolidation**
+
 ```typescript
 // Before: Separate middleware for headers
 app.use('*', securityHeaders())
@@ -462,14 +506,18 @@ app.use('*', corsHeaders())
 app.use('*', cacheHeaders())
 
 // After: Combined middleware
-app.use('*', combinedHeaders({
-  security: true,
-  cors: corsConfig,
-  cache: cacheConfig
-}))
+app.use(
+  '*',
+  combinedHeaders({
+    security: true,
+    cors: corsConfig,
+    cache: cacheConfig,
+  })
+)
 ```
 
 ### Measurement Strategy
+
 ```bash
 # Header operation benchmark
 cat > /tmp/gh-aw/agent/header-bench.ts << 'EOF'
@@ -508,11 +556,13 @@ bun run /tmp/gh-aw/agent/header-bench.ts
 Response header handling in Hono is already well-optimized given the constraints of the Web Standards Headers API. The fast paths for simple responses (json/text without headers) provide good performance for common cases.
 
 **Micro-optimizations to header copying/iteration:**
+
 - Add complexity
 - Provide inconsistent benefits across workloads
 - Often regress performance in common cases
 
 **Recommendation**: Focus on application-level optimizations:
+
 - Response caching
 - Reducing header operations
 - Middleware consolidation
@@ -523,9 +573,11 @@ Only consider framework-level header optimizations if profiling shows header ope
 ## Context Object Performance
 
 ### Location
+
 - `src/context.ts` - Request context
 
 ### Current State
+
 ```typescript
 class Context {
   req: HonoRequest
@@ -538,37 +590,40 @@ class Context {
 ### Optimization Opportunities
 
 **1. Lazy Initialization**
+
 ```typescript
 // Don't initialize rarely-used properties upfront
 class Context {
-  private _parsedBody?: unknown;
+  private _parsedBody?: unknown
 
   // Lazy getter
   get parsedBody() {
     if (this._parsedBody === undefined) {
-      this._parsedBody = parseBody(this.req);
+      this._parsedBody = parseBody(this.req)
     }
-    return this._parsedBody;
+    return this._parsedBody
   }
 }
 ```
 
 **2. Reduce Object Allocations**
+
 ```typescript
 // Pool and reuse context objects for simple requests
-const contextPool: Context[] = [];
+const contextPool: Context[] = []
 
 function getContext(): Context {
-  return contextPool.pop() ?? new Context();
+  return contextPool.pop() ?? new Context()
 }
 
 function releaseContext(c: Context) {
-  c.reset();  // Clear state
-  contextPool.push(c);
+  c.reset() // Clear state
+  contextPool.push(c)
 }
 ```
 
 **3. Optimize Frequently-Accessed Properties**
+
 ```typescript
 // Use direct property access instead of getters for hot paths
 // Profile first to identify hot properties
@@ -581,6 +636,7 @@ status: number;  // Direct property
 ```
 
 ### Measurement Strategy
+
 ```bash
 # Micro-benchmark context creation
 cat > /tmp/gh-aw/agent/context-bench.ts << 'EOF'
@@ -602,33 +658,253 @@ EOF
 bun run /tmp/gh-aw/agent/context-bench.ts
 ```
 
+## JavaScript Engine Optimization Patterns
+
+### Modern Engine Optimizations (V8, JavaScriptCore, SpiderMonkey)
+
+Modern JavaScript engines perform sophisticated optimizations that can make traditional "performance wisdom" obsolete. Understanding what engines already optimize helps avoid wasted effort.
+
+### 1. Regex Literal Compilation
+
+**Traditional wisdom**: "Move regex to module level to avoid recompilation on every call"
+
+**Reality**: Modern engines optimize regex literals extremely well.
+
+**Investigation Results (Oct 2025)**
+
+Tested optimization of `getMimeType()` in `src/utils/mime.ts`:
+
+```typescript
+// Baseline: Regex created on every call
+export const getMimeType = (filename: string) => {
+  const regexp = /\.([a-zA-Z0-9]+?)$/ // Created each call
+  const match = filename.match(regexp)
+  // ...
+}
+
+// Attempted optimization: Module-level regex
+const FILE_EXTENSION_REGEXP = /\.([a-zA-Z0-9]+?)$/
+export const getMimeType = (filename: string) => {
+  const match = filename.match(FILE_EXTENSION_REGEXP) // Reuse regex
+  // ...
+}
+```
+
+**Benchmark results** (1M iterations, 17 test files, Bun 1.2.19):
+
+- Baseline: 3,410ms (4.98M calls/sec, 200.6ns/call)
+- Optimized: 3,392ms (5.01M calls/sec, 199.6ns/call)
+- **Improvement: 0.53%** (within measurement noise)
+
+Multiple runs showed high variability (-1.5% to +2%), indicating **NO measurable improvement**.
+
+**Why engines optimize this:**
+
+1. **Regex pattern recognition**: Engines detect constant regex patterns and compile once
+2. **Inline caching**: JIT compilers cache compiled regexes at call sites
+3. **Escape analysis**: Determines regex doesn't escape function scope
+4. **Dead store elimination**: Optimizes away redundant regex allocations
+
+**When regex hoisting DOES help:**
+
+- Dynamic regex construction: `new RegExp(pattern)` where pattern varies
+- Complex patterns (100+ characters)
+- Regex with flags that aren't literal: `new RegExp(str, flags)`
+
+**Lesson learned**: Don't assume traditional optimizations apply to modern engines. Always measure!
+
+### 2. String Operations
+
+**Engine optimizations:**
+
+- **Rope strings**: Concatenation often doesn't copy until needed
+- **Slicing is cheap**: `str.slice()` creates views, not copies (often)
+- **Template literals**: Optimized similarly to concatenation
+
+**Example that shows unexpected performance:**
+
+```typescript
+// Intuition: Pre-allocating array should be faster
+const parts = new Array(100)
+for (let i = 0; i < 100; i++) {
+  parts[i] = someString(i)
+}
+const result = parts.join('')
+
+// Reality: Simple concatenation is often comparable or faster
+let result = ''
+for (let i = 0; i < 100; i++) {
+  result += someString(i) // Engines optimize this well
+}
+```
+
+Modern engines use **rope data structures** that defer actual string copying.
+
+### 3. Object Property Access
+
+**Engine optimizations:**
+
+- **Hidden classes (shapes)**: Objects with same structure share optimized access paths
+- **Inline caching**: Property lookups cached at call sites
+- **Property access is NOT expensive** (unless polymorphic)
+
+**Anti-pattern:**
+
+```typescript
+// Premature optimization - caching property lookups
+const cachedLength = arr.length
+for (let i = 0; i < cachedLength; i++) {
+  // ...
+}
+
+// Modern engines already optimize this:
+for (let i = 0; i < arr.length; i++) {
+  // Property access cached by engine
+}
+```
+
+**When caching DOES help:**
+
+- Computed properties: `obj[dynamicKey]`
+- Properties with side effects (getters)
+- Cross-function boundaries
+
+### 4. Loop Optimizations
+
+**Engine capabilities:**
+
+- **Loop unrolling**: Engines unroll small loops automatically
+- **Bounds check elimination**: Removes redundant array bounds checks
+- **SIMD autovectorization**: Parallel execution of loop iterations (when possible)
+
+**Example:**
+
+```typescript
+// Manual unrolling is usually NOT needed
+for (let i = 0; i < arr.length; i++) {
+  result += arr[i] // Engine may unroll this
+}
+
+// Manual unrolling can actually HURT performance:
+for (let i = 0; i < arr.length; i += 4) {
+  result += arr[i] + arr[i + 1] + arr[i + 2] + arr[i + 3] // Less clear, no benefit
+}
+```
+
+### 5. Function Inlining
+
+**Engine behavior:**
+
+- Small functions (\u003c100 characters) often inlined automatically
+- Hot functions identified by profiler and inlined
+- Polymorphic call sites prevent inlining
+
+**Don't manually inline unless:**
+
+- Profiler shows function call overhead is significant
+- Function is never inlined (check with `--trace-turbo-inlining` in Node)
+
+### Measurement-Driven Optimization
+
+**Golden rule**: Measure first, optimize second, measure again.
+
+**Process:**
+
+1. **Profile** - Identify actual bottlenecks (not assumed ones)
+2. **Baseline** - Record current performance with multiple runs
+3. **Optimize** - Make targeted changes
+4. **Validate** - Benchmark shows \u003e5% improvement consistently
+5. **Document** - Explain why optimization works
+
+**Red flags for ineffective optimizations:**
+
+- Improvement \u003c 2% (likely measurement noise)
+- High variance across runs (unstable benchmark)
+- Improvement only in synthetic micro-benchmark (not realistic workload)
+- Complexity added for negligible gain
+
+### Runtime-Specific Considerations
+
+Different engines have different optimization characteristics:
+
+**Bun (JavaScriptCore)**:
+
+- Aggressive JIT compilation
+- Fast startup
+- Good regex performance
+- Excellent string handling
+
+**Node.js (V8)**:
+
+- Tiered compilation (Ignition → TurboFan)
+- Excellent for long-running processes
+- Strong optimization after warmup
+- Memory-efficient
+
+**Deno (V8)**:
+
+- Similar to Node.js
+- TypeScript compilation overhead
+- Strong Web API performance
+
+**Cloudflare Workers (V8)**:
+
+- Cold start optimization critical
+- Limited execution time (50ms CPU)
+- Focus on minimal allocation
+
+**Optimization priority by runtime:**
+
+- **Workers/Edge**: Minimize allocations, reduce code size
+- **Long-running (Node/Bun)**: Let JIT optimize, avoid premature optimization
+- **All**: Focus on algorithmic improvements over micro-optimizations
+
+### Validation: When NOT to Optimize
+
+Skip optimization if:
+
+- [ ] Performance gain \u003c 5% in realistic benchmark
+- [ ] High implementation complexity
+- [ ] Requires breaking changes
+- [ ] Only improves synthetic micro-benchmark
+- [ ] Profiler doesn't show this as bottleneck
+- [ ] Maintenance burden \u003e performance gain
+
+**Remember**: Code clarity and maintainability often outweigh minor performance improvements. Optimize when it meaningfully improves user experience.
+
 ## General Performance Principles
 
 ### 1. Hot Path Optimization
+
 Focus on code executed on every request:
+
 - Router lookup
 - Middleware execution
 - Context access (req, res, env)
 - Common helpers (c.json(), c.text())
 
 ### 2. Allocation Reduction
+
 Minimize object/array allocations in hot paths:
+
 ```typescript
 // Before: Creates array on every call
 function getHeaders() {
-  return Object.entries(this.headers);
+  return Object.entries(this.headers)
 }
 
 // After: Return iterator, let caller decide
-function *getHeaders() {
+function* getHeaders() {
   for (const key in this.headers) {
-    yield [key, this.headers[key]];
+    yield [key, this.headers[key]]
   }
 }
 ```
 
 ### 3. Branch Prediction
+
 Help CPU predict branches:
+
 ```typescript
 // Before: Unpredictable branch
 if (specialCase || otherCase || rareCase) {
@@ -645,7 +921,9 @@ if (specialCase) { ... }
 ```
 
 ### 4. Cache Locality
+
 Keep related data together:
+
 ```typescript
 // Before: Scattered properties
 class Router {
@@ -669,6 +947,7 @@ class Router {
 ## Testing Performance Changes
 
 ### 1. Benchmark Before/After
+
 ```bash
 # Baseline
 git checkout main
@@ -685,12 +964,14 @@ diff /tmp/baseline.txt /tmp/optimized.txt
 ```
 
 ### 2. Run Tests
+
 ```bash
 # Ensure correctness maintained
 bun run test
 ```
 
 ### 3. Profile If Needed
+
 ```bash
 # Use Node.js profiler
 node --prof your-benchmark.js
