@@ -724,6 +724,21 @@ export class Context<
     arg?: ContentfulStatusCode | ResponseOrInit<ContentfulStatusCode>,
     headers?: HeaderRecord
   ): Response | Promise<Response> => {
+    // Fast path for simple string HTML responses
+    if (
+      typeof html === 'string' &&
+      !this.#preparedHeaders &&
+      !this.#status &&
+      !arg &&
+      !headers &&
+      !this.finalized
+    ) {
+      return new Response(html, {
+        headers: { 'Content-Type': 'text/html; charset=UTF-8' },
+      })
+    }
+
+    // Slow path: merge with existing headers or handle Promise
     const res = (html: string) =>
       this.#newResponse(html, arg, setDefaultContentType('text/html; charset=UTF-8', headers))
     return typeof html === 'object'
