@@ -674,8 +674,11 @@ export class Context<
     arg?: ContentfulStatusCode | ResponseOrInit,
     headers?: HeaderRecord
   ): ReturnType<TextRespond> => {
+    // Fast path: skip header merging overhead for simple responses
     return !this.#preparedHeaders && !this.#status && !arg && !headers && !this.finalized
-      ? (new Response(text) as ReturnType<TextRespond>)
+      ? (new Response(text, {
+          headers: { 'Content-Type': TEXT_PLAIN },
+        }) as ReturnType<TextRespond>)
       : (this.#newResponse(
           text,
           arg,
