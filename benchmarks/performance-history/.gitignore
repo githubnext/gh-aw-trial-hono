@@ -1,0 +1,5 @@
+# Performance history data (local tracking)
+history.jsonl
+
+# Optional: Commit history.jsonl to track team-wide performance
+# Remove the line above to track history in git
