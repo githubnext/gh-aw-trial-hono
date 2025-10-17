@@ -4,6 +4,16 @@ export default defineConfig({
   test: {
     globals: true,
     setupFiles: ['./.vitest.config/setup-vitest.ts'],
+    // Performance optimizations
+    // Coverage disabled by default for faster test runs - re-enable with --coverage flag when needed
+    pool: 'threads',
+    poolOptions: {
+      threads: {
+        singleThread: false,
+      },
+    },
+    // Optimize test execution by increasing concurrency
+    maxConcurrency: 10,
     coverage: {
       enabled: false, // Disabled by default for faster test runs. Use --coverage flag when needed.
       provider: 'v8',
@@ -24,7 +34,10 @@ export default defineConfig({
       ],
     },
     projects: [
-      './runtime-tests/*/vitest.config.ts',
+      // Runtime test projects (Node, Lambda, Workers, etc.) are opt-in for faster local development
+      // Enable with: HONO_TEST_RUNTIME=1 bun run test
+      // CI should always run with HONO_TEST_RUNTIME=1 for full coverage
+      ...(process.env.HONO_TEST_RUNTIME === '1' ? ['./runtime-tests/*/vitest.config.ts'] : []),
       {
         esbuild: {
           jsx: 'automatic',
